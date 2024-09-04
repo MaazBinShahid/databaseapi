@@ -9,20 +9,44 @@ app = Flask(__name__)
 # Database connection settings
 DATABASE_URL = 'postgresql://cocihomesdb_owner:j78CsNBHawmA@ep-damp-water-a5i4eugu.us-east-2.aws.neon.tech/cocihomesdb?sslmode=require'
 
-async def insert_data(data):
-    try:
-        conn = await asyncpg.connect(DATABASE_URL)
+# async def insert_data(data):
+#     try:
+#         conn = await asyncpg.connect(DATABASE_URL)
         
-        # Insert data into the database
-        await conn.execute('''
+#         # Insert data into the database
+#         await conn.execute('''
+#             INSERT INTO properties(owner_name, address, phone_number) VALUES($1, $2, $3)
+#         ''', data['owner_name'], data['address'], data['phone_number'])
+
+
+        
+#         # Close the connection
+#         await conn.close()
+#         print("Success")
+#         return {"status": "success"}
+
+#     except Exception as e:
+#         return {"status": "error", "message": str(e)}
+
+
+
+
+
+
+BATCH_SIZE = 100  # Process 100 rows at a time
+
+async def insert_data_batch(batch):
+    try:
+        conn = await asyncpg.connect(DATABASE_URL, command_timeout=60)  # Increase timeout if necessary
+
+        # Batch insert data into the database
+        await conn.executemany('''
             INSERT INTO properties(owner_name, address, phone_number) VALUES($1, $2, $3)
-        ''', data['owner_name'], data['address'], data['phone_number'])
-
-
+        ''', [(data['owner_name'], data['address'], data['phone_number']) for data in batch])
         
         # Close the connection
         await conn.close()
-        print("Success")
+        print("Batch insert successful")
         return {"status": "success"}
 
     except Exception as e:
@@ -279,15 +303,17 @@ def update_data_bulk(phone_number):
 def insert_data_bulk():
     print(f"Raw Data: {request.data}")
     data_list = request.json
-    print("Got the data")
-    print(data_list)
+    print("Received data")
+    
+    # Create batches
+    batches = [data_list[i:i + BATCH_SIZE] for i in range(0, len(data_list), BATCH_SIZE)]
 
     # Get the existing event loop, or create a new one if it doesn't exist
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-   # Run the asynchronous tasks in the current event loop
-    tasks = [insert_data(data) for data in data_list]
+    # Run the asynchronous tasks in the current event loop
+    tasks = [insert_data_batch(batch) for batch in batches]
     results = loop.run_until_complete(asyncio.gather(*tasks))
     
     return jsonify(results), 200
@@ -295,3 +321,25 @@ def insert_data_bulk():
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8000)  # Changed port to 8000, suitable for reverse proxy setups
 
+
+
+
+
+
+# @app.route('/api/insert_data', methods=['POST'])
+# def insert_data_bulk():
+#     print(f"Raw Data: {request.data}")
+#     data_list = request.json
+#     print("Got the data")
+#     print(data_list)
+
+#     # Get the existing event loop, or create a new one if it doesn't exist
+#     loop = asyncio.new_event_loop()
+#     asyncio.set_event_loop(loop)
+
+#    # Run the asynchronous tasks in the current event loop
+#     tasks = [insert_data(data) for data in data_list]
+#     results = loop.run_until_complete(asyncio.gather(*tasks))
+    
+#     return jsonify(results), 200
+# git add .
