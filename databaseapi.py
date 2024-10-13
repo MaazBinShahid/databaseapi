@@ -9,25 +9,6 @@ app = Flask(__name__)
 # Database connection settings
 DATABASE_URL = 'postgresql://cocihomesdb_owner:j78CsNBHawmA@ep-damp-water-a5i4eugu.us-east-2.aws.neon.tech/cocihomesdb?sslmode=require'
 
-# async def insert_data(data):
-#     try:
-#         conn = await asyncpg.connect(DATABASE_URL)
-        
-#         # Insert data into the database
-#         await conn.execute('''
-#             INSERT INTO properties(owner_name, address, phone_number) VALUES($1, $2, $3)
-#         ''', data['owner_name'], data['address'], data['phone_number'])
-
-
-        
-#         # Close the connection
-#         await conn.close()
-#         print("Success")
-#         return {"status": "success"}
-
-#     except Exception as e:
-#         return {"status": "error", "message": str(e)}
-
 
 
 
@@ -53,6 +34,22 @@ async def insert_data_batch(batch):
         return {"status": "error", "message": str(e)}
     
 
+async def insert_data_batch1(batch):
+    try:
+        conn = await asyncpg.connect(DATABASE_URL, command_timeout=60)  # Increase timeout if necessary
+
+        # Batch insert data into the database
+        await conn.executemany('''
+            INSERT INTO maryland_leads(first_name, phone_number, address, city, state, zip, status) VALUES($1, $2, $3, $4, $5, $6, $7)
+        ''', [(data['first_name'], data['phone_number'], data['address'], data['city'], data['state'], data['zip'], data['status'] ) for data in batch])
+        
+        # Close the connection
+        await conn.close()
+        print("Batch insert successful")
+        return {"status": "success"}
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 
@@ -260,17 +257,6 @@ async def update_data(phone_number, data):
             data['water_heater_age'], data['is_home_owner'], data['chat_completed'], 
             phone_number)
 
-        # result = await conn.execute('''
-        #     UPDATE properties 
-        #     SET owner_name = $1,
-        #         age_of_ac = $2,
-        #         current_on_payments = $3,
-        #         -- Add the remaining fields here
-        #         chat_completed = $29
-        #     WHERE phone_number = $30
-        # ''', data['owner_name'], data['age_of_ac'], data['current_on_payments'], 
-        #     # Add the remaining values here
-        #     data['chat_completed'], phone_number)
 
 
 
@@ -326,20 +312,43 @@ if __name__ == '__main__':
 
 
 
-# @app.route('/api/insert_data', methods=['POST'])
-# def insert_data_bulk():
-#     print(f"Raw Data: {request.data}")
-#     data_list = request.json
-#     print("Got the data")
-#     print(data_list)
 
-#     # Get the existing event loop, or create a new one if it doesn't exist
-#     loop = asyncio.new_event_loop()
-#     asyncio.set_event_loop(loop)
+@app.route('/api/insert_data_from_maryland', methods=['POST'])
+def insert_data_from_php():
+    """
+    Handles data sent from the PHP script and inserts it into the database.
+    """
+    try:
+        data = request.json  # Expecting JSON payload from PHP
+        if not data:
+            return jsonify({"status": "error", "message": "No data received"}), 400
 
-#    # Run the asynchronous tasks in the current event loop
-#     tasks = [insert_data(data) for data in data_list]
-#     results = loop.run_until_complete(asyncio.gather(*tasks))
-    
-#     return jsonify(results), 200
+        # Check if required fields are present
+        required_fields = ['first_name', 'phone_number', 'address','city','state','zip','status']
+        missing_fields = [field for field in required_fields if field not in data]
+
+        if missing_fields:
+            return jsonify({"status": "error", "message": f"Missing fields: {', '.join(missing_fields)}"}), 400
+
+        # Create an event loop and insert data asynchronously
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(insert_data_batch1([data]))
+
+        return jsonify(result), 200
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+
+
+
+
+
+
+
+
 # git add .
+#git commit -m "Updated API with batch processing and increased timeout"
+#git push origin main
