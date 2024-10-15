@@ -1,9 +1,11 @@
 
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response, send_file
 import asyncio
 import asyncpg
 from datetime import datetime
+import pandas as pd
+import io
 app = Flask(__name__)
 
 # Database connection settings
@@ -15,41 +17,70 @@ DATABASE_URL = 'postgresql://cocihomesdb_owner:j78CsNBHawmA@ep-damp-water-a5i4eu
 
 
 BATCH_SIZE = 100  # Process 100 rows at a time
+CONCURRENT_LIMIT = 5  # Limit concurrent inserts
+
+semaphore = asyncio.Semaphore(CONCURRENT_LIMIT)
+
+
 
 async def insert_data_batch(batch):
-    try:
-        conn = await asyncpg.connect(DATABASE_URL, command_timeout=60)  # Increase timeout if necessary
+    async with semaphore:
+        try:
+            conn = await asyncpg.connect(DATABASE_URL, command_timeout=60)  # Increase timeout if necessary
 
-        # Batch insert data into the database
-        await conn.executemany('''
-            INSERT INTO properties(owner_name, address, phone_number) VALUES($1, $2, $3)
-        ''', [(data['owner_name'], data['address'], data['phone_number']) for data in batch])
-        
-        # Close the connection
-        await conn.close()
-        print("Batch insert successful")
-        return {"status": "success"}
+            # Batch insert data into the database
+            await conn.executemany('''
+                INSERT INTO properties(owner_name, address, phone_number) VALUES($1, $2, $3)
+            ''', [(data['owner_name'], data['address'], data['phone_number']) for data in batch])
+            
+            # Close the connection
+            await conn.close()
+            print(f"Batch insert successful: {BATCH_SIZE} leads uploaded.")
+            return {"status": "success"}
 
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
     
 
 async def insert_data_batch1(batch):
-    try:
-        conn = await asyncpg.connect(DATABASE_URL, command_timeout=60)  # Increase timeout if necessary
+    async with semaphore:
+        try:
+            print("Function is called to update the data")
+            conn = await asyncpg.connect(DATABASE_URL, command_timeout=60)  # Increase timeout if necessary
+            print("Function is called to update the data1")
 
-        # Batch insert data into the database
-        await conn.executemany('''
-            INSERT INTO maryland_leads(first_name, phone_number, address, city, state, zip, status) VALUES($1, $2, $3, $4, $5, $6, $7)
-        ''', [(data['first_name'], data['phone_number'], data['address'], data['city'], data['state'], data['zip'], data['status'] ) for data in batch])
-        
-        # Close the connection
-        await conn.close()
-        print("Batch insert successful")
-        return {"status": "success"}
 
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+            print(batch)
+            # Print the SQL data being inserted
+            data_list = [
+                (data['first_name'], data['phone_number'], data['address'], 
+                data['city'], data['state'], data['zip'], data['status'], data['campaign'])
+                for data in batch
+            ]
+            print(f"Data to insert: {data_list}")
+
+            # Execute the batch insert
+            await conn.executemany('''
+                INSERT INTO maryland_leads(first_name, phone_number, address, city, state, zip, status, campaign) 
+                VALUES($1, $2, $3, $4, $5, $6, $7, $8)
+            ''', data_list)
+
+            print("SQL execution completed")
+
+            # # Batch insert data into the database
+            # await conn.executemany('''
+            #     INSERT INTO maryland_leads(first_name, phone_number, address, city, state, zip, status) VALUES($1, $2, $3, $4, $5, $6, $7)
+            # ''', [(data['first_name'], data['phone_number'], data['address'], data['city'], data['state'], data['zip'], data['status'] ) for data in batch])
+            
+            print("Function is called to update the data2")
+            # Close the connection
+            await conn.close()
+            print("Function is called to update the data3")
+            print("Batch insert successful")
+            return {"status": "success"}
+
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
 
 
 
@@ -129,28 +160,6 @@ def update_last_interaction_api():
     result = loop.run_until_complete(update_last_interaction(phone_number))
 
     return jsonify(result), 200
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -293,6 +302,8 @@ def insert_data_bulk():
     
     # Create batches
     batches = [data_list[i:i + BATCH_SIZE] for i in range(0, len(data_list), BATCH_SIZE)]
+    total_batches = len(batches)  # Calculate total batches
+    print(f"Total batches to process: {total_batches}")
 
     # Get the existing event loop, or create a new one if it doesn't exist
     loop = asyncio.new_event_loop()
@@ -301,11 +312,143 @@ def insert_data_bulk():
     # Run the asynchronous tasks in the current event loop
     tasks = [insert_data_batch(batch) for batch in batches]
     results = loop.run_until_complete(asyncio.gather(*tasks))
+
+
+
+    # Calculate successful and failed batches
+    successful_batches = sum(1 for result in results if result.get("status") == "success")
+    failed_batches = total_batches - successful_batches
+
+    # Print the summary
+    print(f"Total batches: {total_batches}")
+    print(f"Successful batches: {successful_batches}")
+    print(f"Failed batches: {failed_batches}")
     
     return jsonify(results), 200
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8000)  # Changed port to 8000, suitable for reverse proxy setups
+
+
+
+
+
+
+
+
+@app.route('/api/roor_webhook', methods=['POST'])
+def insert_webhook():
+    print(f"Raw Data: {request.data}")
+    data = request.json
+
+    # Extract the phone number and remove the leading '1' if it exists
+    phone_number = data['from']
+    if phone_number.startswith('1'):
+        phone_number = phone_number[1:]
+
+    # Call an async function to update the database
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    result = loop.run_until_complete(update_status(phone_number))
+    return result
+
+async def update_status(phone_number):
+    try:
+        print("Function is called with the phone number ", phone_number)
+        # Connect to the database
+        conn = await asyncpg.connect(DATABASE_URL, command_timeout=60)
+
+        # Check if the phone number exists in the database
+        query = "SELECT 1 FROM maryland_leads WHERE phone_number = $1"
+        exists = await conn.fetchval(query, phone_number)
+
+        if exists:
+            print("The Phone number exists in the database")
+            # Update the status to 'replied'
+            update_query = "UPDATE maryland_leads SET status = 'replied' WHERE phone_number = $1"
+            await conn.execute(update_query, phone_number)
+            print(f"Updated status to 'replied' for phone number: {phone_number}")
+            response = {"status": "success", "message": "Lead status updated."}
+        else:
+            print(f"No entry found for phone number: {phone_number}")
+            response = {"status": "error", "message": "No entry found for this phone number."}
+
+        # Close the connection
+        await conn.close()
+        return response
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+
+
+
+
+async def fetch_leads():
+    try:
+        # Connect to the database
+        conn = await asyncpg.connect(DATABASE_URL, command_timeout=60)
+
+        # Query to fetch all leads
+        query = """
+        SELECT first_name, phone_number, address, city, state, zip, status 
+        FROM maryland_leads
+        """
+        rows = await conn.fetch(query)
+        await conn.close()  # Close the connection
+
+        # Convert the result to a DataFrame
+        df = pd.DataFrame(rows, columns=['first_name', 'phone_number', 'address', 
+                                         'city', 'state', 'zip', 'status'])
+
+        return df
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return None
+
+@app.route('/api/download_csv', methods=['GET'])
+def download_csv():
+    # Create an event loop to run the async function
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    df = loop.run_until_complete(fetch_leads())
+
+    if df is None:
+        return jsonify({"error": "Failed to fetch leads"}), 500
+
+    # Save DataFrame to an in-memory buffer
+    buffer = io.StringIO()
+    df.to_csv(buffer, index=False)
+    buffer.seek(0)
+
+    # Return CSV as a file download response
+    return Response(
+        buffer,
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment; filename=leads.csv"}
+    )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -315,25 +458,26 @@ if __name__ == '__main__':
 
 @app.route('/api/insert_data_from_maryland', methods=['POST'])
 def insert_data_from_php():
+    print("Function is called")
     """
     Handles data sent from the PHP script and inserts it into the database.
     """
     try:
+
         data = request.json  # Expecting JSON payload from PHP
+        # print(data)
         if not data:
             return jsonify({"status": "error", "message": "No data received"}), 400
+        if data:
+            data.pop(0)
+        
+        batches = [data[i:i + BATCH_SIZE] for i in range(0, len(data), BATCH_SIZE)]
 
-        # Check if required fields are present
-        required_fields = ['first_name', 'phone_number', 'address','city','state','zip','status']
-        missing_fields = [field for field in required_fields if field not in data]
-
-        if missing_fields:
-            return jsonify({"status": "error", "message": f"Missing fields: {', '.join(missing_fields)}"}), 400
-
-        # Create an event loop and insert data asynchronously
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(insert_data_batch1([data]))
+        tasks = [insert_data_batch1(batch) for batch in batches]
+        result = loop.run_until_complete(asyncio.gather(*tasks))
+        
 
         return jsonify(result), 200
 
@@ -345,7 +489,8 @@ def insert_data_from_php():
 
 
 
-
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8000)  # Changed port to 8000, suitable for reverse proxy setups
 
 
 
