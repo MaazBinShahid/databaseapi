@@ -12,10 +12,6 @@ app = Flask(__name__)
 DATABASE_URL = 'postgresql://cocihomesdb_owner:j78CsNBHawmA@ep-damp-water-a5i4eugu.us-east-2.aws.neon.tech/cocihomesdb?sslmode=require'
 
 
-
-
-
-
 BATCH_SIZE = 100  # Process 100 rows at a time
 CONCURRENT_LIMIT = 5  # Limit concurrent inserts
 
@@ -201,17 +197,6 @@ def get_data_api(phone_number):
     print("Results are ")
     print(result)    
     return jsonify(result), 200
-
-
-
-
-
-
-
-
-
-
-
 
 
     
