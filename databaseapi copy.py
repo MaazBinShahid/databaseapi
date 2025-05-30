@@ -528,7 +528,7 @@ def get_toll_data():
         if df is None or df.empty:
             return jsonify([]), 200
 
-        # print(df)
+        print(df)
         # Convert datetime columns to ISO strings or None
         datetime_cols = ['date_posted', 'entry_datetime', 'exit_datetime']
         for col in datetime_cols:
@@ -633,7 +633,9 @@ async def insert_data_batch_toll(batch):
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
                 )
-                RETURNING id, 'inserted' AS status;
+                ON CONFLICT (date_posted, balance) 
+                DO UPDATE SET balance = toll_transactions.balance  -- no real change
+                RETURNING id, CASE WHEN xmax = 0 THEN 'inserted' ELSE 'skipped' END AS status;
             '''
             skipped_count = 0
             inserted_count = 0
@@ -689,39 +691,6 @@ def insert_data_from_php1():
 
 
 
-async def truncate_toll_transactions():
-    try:
-        conn = await asyncpg.connect(DATABASE_URL1, command_timeout=60)
-        await conn.execute("TRUNCATE TABLE toll_transactions RESTART IDENTITY;")
-        await conn.close()
-        print("toll_transactions table truncated.")
-        return {"status": "success", "message": "Table truncated successfully"}
-    except Exception as e:
-        print(f"Error truncating table: {e}")
-        return {"status": "error", "message": str(e)}
-
-
-
-
-
-
-@app.route('/api/truncateTollTransactions', methods=['POST'])
-def truncate_toll_data():
-    print("the truncate function is called")
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(truncate_toll_transactions())
-        return jsonify(result), 200 if result["status"] == "success" else 500
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-
-
-
-
-
-
 
 
 
@@ -736,12 +705,124 @@ if __name__ == '__main__':
 
 #python databaseapi.py
 #ngrok http 8000
+<?php
+session_start(); // Start a session to store the $data array between requests
+require_once 'include/db.php';
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+error_reporting(E_ALL);
+?>
 
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Upload Data</title>
+    <link rel="icon" type="image/png" sizes="16x16" href="../assets/images/favicon.png">
+    <link href="../assets/vendor/bootstrap-select/dist/css/bootstrap-select.min.css" rel="stylesheet">
+    <link href="../assets/css/style.css" rel="stylesheet">
+</head>
+<body>
 
+<div id="main-wrapper">
+    <?php include 'include/nav.php'; ?>
+    <?php include 'include/sidebar.php'; ?>
 
+    <div class="content-body">
+        <div class="container-fluid">
+            <div class="page-titles">
+                <ol class="breadcrumb">
+                    <li class="breadcrumb-item"><a href="javascript:void(0)">Admin Panel</a></li>
+                    <li class="breadcrumb-item active"><a href="javascript:void(0)">Upload Data</a></li>
+                </ol>
+            </div>
+            <div class="row">
+                <div class="col-12">
+                    <div class="card">
+                        <div class="card-header">
+                            <h4 class="card-title">Fetch Toll Transaction Data from API</h4>
+                        </div>
+                        <div class="card-body">
+                            <!-- Button to Trigger API Call -->
+                            <form method="POST">
+                                <button type="submit" name="fetch_api_data" class="btn btn-primary">Fetch Data from API</button>
+                            </form>
 
-#Specific Transponder number according to the vehicle name not the transponder number 
-#Show the amount total and 
-#Add the button to clear the database Done
-#Delete any constraints  Done
+                            <?php
+                            if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['fetch_api_data'])) {
+                                $apiUrl = 'https://8b78-223-123-7-17.ngrok-free.app/api/get_toll_data';
 
+                                $ch = curl_init($apiUrl);
+                                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                                curl_setopt($ch, CURLOPT_HTTPGET, true);
+                                curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+
+                                $response = curl_exec($ch);
+                                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                                curl_close($ch);
+
+                                if ($httpCode === 200 && $response) {
+                                    $data = json_decode($response, true);
+
+                                    if (!empty($data)) {
+                                        echo "<div class='table-responsive mt-4'>";
+                                        echo "<table class='table table-bordered'>";
+                                        echo "<thead><tr>
+                                            <th>Date Posted</th>
+                                            <th>Transaction</th>
+                                            <th>Receipt</th>
+                                            <th>Transponder Plate</th>
+                                            <th>Agency</th>
+                                            <th>Entry Plaza</th>
+                                            <th>Exit Plaza</th>
+                                            <th>Entry Datetime</th>
+                                            <th>Exit Datetime</th>
+                                            <th>Plaza Facility</th>
+                                            <th>Amount</th>
+                                            <th>Balance</th>
+                                        </tr></thead><tbody>";
+
+                                        foreach ($data as $row) {
+                                            echo "<tr>
+                                                <td>{$row['date_posted']}</td>
+                                                <td>{$row['transaction']}</td>
+                                                <td>{$row['receipt']}</td>
+                                                <td>{$row['transponder_plate']}</td>
+                                                <td>{$row['agency']}</td>
+                                                <td>{$row['entry_plaza']}</td>
+                                                <td>{$row['exit_plaza']}</td>
+                                                <td>{$row['entry_datetime']}</td>
+                                                <td>{$row['exit_datetime']}</td>
+                                                <td>{$row['plaza_facility']}</td>
+                                                <td>{$row['amount']}</td>
+                                                <td>{$row['balance']}</td>
+                                            </tr>";
+                                        }
+
+                                        echo "</tbody></table></div>";
+                                    } else {
+                                        echo "<div class='alert alert-warning mt-3'>No data returned from API.</div>";
+                                    }
+                                } else {
+                                    echo "<div class='alert alert-danger mt-3'>Failed to fetch data. HTTP Code: $httpCode</div>";
+                                }
+                            }
+                            ?>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <?php include 'include/footer.php'; ?>
+</div>
+
+<script src="../assets/vendor/global/global.min.js"></script>
+<script src="../assets/vendor/bootstrap-select/dist/js/bootstrap-select.min.js"></script>
+<script src="../assets/js/custom.min.js"></script>
+<script src="../assets/js/deznav-init.js"></script>
+
+</body>
+</html>
